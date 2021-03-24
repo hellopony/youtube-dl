@@ -95,7 +95,8 @@ from .bandcamp import BandcampIE, BandcampAlbumIE, BandcampWeeklyIE
 from .bbc import (
     BBCCoUkIE,
     BBCCoUkArticleIE,
-    BBCCoUkIPlayerPlaylistIE,
+    BBCCoUkIPlayerEpisodesIE,
+    BBCCoUkIPlayerGroupIE,
     BBCCoUkPlaylistIE,
     BBCIE,
 )
@@ -1628,4 +1629,5 @@ from .zingmp3 import (
     ZingMp3IE,
     ZingMp3AlbumIE,
 )
+from .zoom import ZoomIE
 from .zype import ZypeIE
