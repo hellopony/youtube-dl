@@ -119,7 +119,6 @@
  - **BitChuteChannel**
  - **BleacherReport**
  - **BleacherReportCMS**
- - **blinkx**
  - **Bloomberg**
  - **BokeCC**
  - **BongaCams**
@@ -473,8 +472,6 @@
  - **LinuxAcademy**
  - **LiTV**
  - **LiveJournal**
- - **LiveLeak**
- - **LiveLeakEmbed**
  - **livestream**
  - **livestream:original**
  - **LnkGo**
@@ -713,6 +710,7 @@
  - **play.fm**
  - **player.sky.it**
  - **PlayPlusTV**
+ - **PlayStuff**
  - **PlaysTV**
  - **Playtvak**: Playtvak.cz, iDNES.cz and Lidovky.cz
  - **Playvid**
@@ -1162,7 +1160,7 @@
  - **WWE**
  - **XBef**
  - **XboxClips**
- - **XFileShare**: XFileShare based sites: Aparat, ClipWatching, GoUnlimited, GoVid, HolaVid, Streamty, TheVideoBee, Uqload, VidBom, vidlo, VidLocker, VidShare, VUp, XVideoSharing
+ - **XFileShare**: XFileShare based sites: Aparat, ClipWatching, GoUnlimited, GoVid, HolaVid, Streamty, TheVideoBee, Uqload, VidBom, vidlo, VidLocker, VidShare, VUp, WolfStream, XVideoSharing
  - **XHamster**
  - **XHamsterEmbed**
  - **XHamsterUser**

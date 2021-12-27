@@ -1,3 +1,90 @@
+version 2021.12.17
+
+Core
+* [postprocessor/ffmpeg] Show ffmpeg output on error (#22680, #29336)
+
+Extractors
+* [youtube] Update signature function patterns (#30363, #30366)
+* [peertube] Only call description endpoint if necessary (#29383)
+* [periscope] Pass referer to HLS requests (#29419)
+- [liveleak] Remove extractor (#17625, #24222, #29331)
++ [pornhub] Add support for pornhubthbh7ap3u.onion
+* [pornhub] Detect geo restriction
+* [pornhub] Dismiss tbr extracted from download URLs (#28927)
+* [curiositystream:collection] Extend _VALID_URL (#26326, #29117)
+* [youtube] Make get_video_info processing more robust (#29333)
+* [youtube] Workaround for get_video_info request (#29333)
+* [bilibili] Strip uploader name (#29202)
+* [youtube] Update invidious instance list (#29281)
+* [umg:de] Update GraphQL API URL (#29304)
+* [nrk] Switch psapi URL to https (#29344)
++ [egghead] Add support for app.egghead.io (#28404, #29303)
+* [appleconnect] Fix extraction (#29208)
++ [orf:tvthek] Add support for MPD formats (#28672, #29236)
+
+
+version 2021.06.06
+
+Extractors
+* [facebook] Improve login required detection
+* [youporn] Fix formats and view count extraction (#29216)
+* [orf:tvthek] Fix thumbnails extraction (#29217)
+* [formula1] Fix extraction (#29206)
+* [ard] Relax URL regular expression and fix video ids (#22724, #29091)
++ [ustream] Detect https embeds (#29133)
+* [ted] Prefer own formats over external sources (#29142)
+* [twitch:clips] Improve extraction (#29149)
++ [twitch:clips] Add access token query to download URLs (#29136)
+* [youtube] Fix get_video_info request (#29086, #29165)
+* [vimeo] Fix vimeo pro embed extraction (#29126)
+* [redbulltv] Fix embed data extraction (#28770)
+* [shahid] Relax URL regular expression (#28772, #28930)
+
+
+version 2021.05.16
+
+Core
+* [options] Fix thumbnail option group name (#29042)
+* [YoutubeDL] Improve extract_info doc (#28946)
+
+Extractors
++ [playstuff] Add support for play.stuff.co.nz (#28901, #28931)
+* [eroprofile] Fix extraction (#23200, #23626, #29008)
++ [vivo] Add support for vivo.st (#29009)
++ [generic] Add support for og:audio (#28311, #29015)
+* [phoenix] Fix extraction (#29057)
++ [generic] Add support for sibnet embeds
++ [vk] Add support for sibnet embeds (#9500)
++ [generic] Add Referer header for direct videojs download URLs (#2879,
+  #20217, #29053)
+* [orf:radio] Switch download URLs to HTTPS (#29012, #29046)
+- [blinkx] Remove extractor (#28941)
+* [medaltv] Relax URL regular expression (#28884)
++ [funimation] Add support for optional lang code in URLs (#28950)
++ [gdcvault] Add support for HTML5 videos
+* [dispeak] Improve FLV extraction (#13513, #28970)
+* [kaltura] Improve iframe extraction (#28969)
+* [kaltura] Make embed code alternatives actually work
+* [cda] Improve extraction (#28709, #28937)
+* [twitter] Improve formats extraction from vmap URL (#28909)
+* [xtube] Fix formats extraction (#28870)
+* [svtplay] Improve extraction (#28507, #28876)
+* [tv2dk] Fix extraction (#28888)
+
+
+version 2021.04.26
+
+Extractors
++ [xfileshare] Add support for wolfstream.tv (#28858)
+* [francetvinfo] Improve video id extraction (#28792)
+* [medaltv] Fix extraction (#28807)
+* [tver] Redirect all downloads to Brightcove (#28849)
+* [go] Improve video id extraction (#25207, #25216, #26058)
+* [youtube] Fix lazy extractors (#28780)
++ [bbc] Extract description and timestamp from __INITIAL_DATA__ (#28774)
+* [cbsnews] Fix extraction for python <3.6 (#23359)
+
+
 version 2021.04.17
 
 Core
