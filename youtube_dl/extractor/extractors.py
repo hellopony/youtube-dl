@@ -376,6 +376,7 @@ from .fc2 import (
     FC2EmbedIE,
 )
 from .fczenit import FczenitIE
+from .fifa import FifaIE
 from .filmon import (
     FilmOnIE,
     FilmOnChannelIE,
@@ -727,6 +728,7 @@ from .myvi import (
     MyviIE,
     MyviEmbedIE,
 )
+from .myvideoge import MyVideoGeIE
 from .myvidster import MyVidsterIE
 from .nationalgeographic import (
     NationalGeographicVideoIE,
