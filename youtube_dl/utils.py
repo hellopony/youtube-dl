@@ -16,6 +16,7 @@ import email.header
 import errno
 import functools
 import gzip
+import inspect
 import io
 import itertools
 import json
@@ -40,7 +41,6 @@ import zlib
 from .compat import (
     compat_HTMLParseError,
     compat_HTMLParser,
-    compat_HTTPError,
     compat_basestring,
     compat_casefold,
     compat_chr,
@@ -63,6 +63,7 @@ from .compat import (
     compat_struct_pack,
     compat_struct_unpack,
     compat_urllib_error,
+    compat_urllib_HTTPError,
     compat_urllib_parse,
     compat_urllib_parse_parse_qs as compat_parse_qs,
     compat_urllib_parse_urlencode,
@@ -2613,7 +2614,8 @@ class YoutubeDLHandler(compat_urllib_request.HTTPHandler):
 
     Part of this code was copied from:
 
-    http://techknack.net/python-urllib2-handlers/
+    http://techknack.net/python-urllib2-handlers/, archived at
+    https://web.archive.org/web/20130527205558/http://techknack.net/python-urllib2-handlers/
 
     Andrew Rowls, the author of that code, agreed to release it to the
     public domain.
@@ -2671,7 +2673,9 @@ class YoutubeDLHandler(compat_urllib_request.HTTPHandler):
             req._Request__original = req._Request__original.partition('#')[0]
             req._Request__r_type = req._Request__r_type.partition('#')[0]
 
-        return req
+        # Use the totally undocumented AbstractHTTPHandler per
+        # https://github.com/yt-dlp/yt-dlp/pull/4158
+        return compat_urllib_request.AbstractHTTPHandler.do_request_(self, req)
 
     def http_response(self, req, resp):
         old_resp = resp
@@ -2682,7 +2686,7 @@ class YoutubeDLHandler(compat_urllib_request.HTTPHandler):
             try:
                 uncompressed = io.BytesIO(gz.read())
             except IOError as original_ioerror:
-                # There may be junk add the end of the file
+                # There may be junk at the end of the file
                 # See http://stackoverflow.com/q/4928560/35070 for details
                 for i in range(1, 1024):
                     try:
@@ -2709,9 +2713,8 @@ class YoutubeDLHandler(compat_urllib_request.HTTPHandler):
             if location:
                 # As of RFC 2616 default charset is iso-8859-1 that is respected by python 3
                 if sys.version_info >= (3, 0):
-                    location = location.encode('iso-8859-1').decode('utf-8')
-                else:
-                    location = location.decode('utf-8')
+                    location = location.encode('iso-8859-1')
+                location = location.decode('utf-8')
                 location_escaped = escape_url(location)
                 if location != location_escaped:
                     del resp.headers['Location']
@@ -2909,6 +2912,19 @@ class YoutubeDLCookieJar(compat_cookiejar.MozillaCookieJar):
                 cookie.expires = None
                 cookie.discard = True
 
+    def get_cookie_header(self, url):
+        """Generate a Cookie HTTP header for a given url"""
+        cookie_req = sanitized_Request(url)
+        self.add_cookie_header(cookie_req)
+        return cookie_req.get_header('Cookie')
+
+    def get_cookies_for_url(self, url):
+        """Generate a list of Cookie objects for a given url"""
+        # Policy `_now` attribute must be set before calling `_cookies_for_request`
+        # Ref: https://github.com/python/cpython/blob/3.7/Lib/http/cookiejar.py#L1360
+        self._policy._now = self._now = int(time.time())
+        return self._cookies_for_request(sanitized_Request(url))
+
 
 class YoutubeDLCookieProcessor(compat_urllib_request.HTTPCookieProcessor):
     def __init__(self, cookiejar=None):
@@ -2939,17 +2955,16 @@ class YoutubeDLRedirectHandler(compat_urllib_request.HTTPRedirectHandler):
 
     The code is based on HTTPRedirectHandler implementation from CPython [1].
 
-    This redirect handler solves two issues:
-     - ensures redirect URL is always unicode under python 2
-     - introduces support for experimental HTTP response status code
-       308 Permanent Redirect [2] used by some sites [3]
+    This redirect handler fixes and improves the logic to better align with RFC7261
+    and what browsers tend to do [2][3]
 
     1. https://github.com/python/cpython/blob/master/Lib/urllib/request.py
-    2. https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308
-    3. https://github.com/ytdl-org/youtube-dl/issues/28768
+    2. https://datatracker.ietf.org/doc/html/rfc7231
+    3. https://github.com/python/cpython/issues/91306
     """
 
-    http_error_301 = http_error_303 = http_error_307 = http_error_308 = compat_urllib_request.HTTPRedirectHandler.http_error_302
+    # Supply possibly missing alias
+    http_error_308 = compat_urllib_request.HTTPRedirectHandler.http_error_302
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         """Return a Request or None in response to a redirect.
@@ -2961,19 +2976,15 @@ class YoutubeDLRedirectHandler(compat_urllib_request.HTTPRedirectHandler):
         else should try to handle this url.  Return None if you can't
         but another Handler might.
         """
-        m = req.get_method()
-        if (not (code in (301, 302, 303, 307, 308) and m in ("GET", "HEAD")
-                 or code in (301, 302, 303) and m == "POST")):
-            raise compat_HTTPError(req.full_url, code, msg, headers, fp)
-        # Strictly (according to RFC 2616), 301 or 302 in response to
-        # a POST MUST NOT cause a redirection without confirmation
-        # from the user (of urllib.request, in this case).  In practice,
-        # essentially all clients do redirect in this case, so we do
-        # the same.
+        if code not in (301, 302, 303, 307, 308):
+            raise compat_urllib_HTTPError(req.full_url, code, msg, headers, fp)
+
+        new_method = req.get_method()
+        new_data = req.data
 
         # On python 2 urlh.geturl() may sometimes return redirect URL
-        # as byte string instead of unicode. This workaround allows
-        # to force it always return unicode.
+        # as a byte string instead of unicode. This workaround forces
+        # it to return unicode.
         if sys.version_info[0] < 3:
             newurl = compat_str(newurl)
 
@@ -2982,13 +2993,35 @@ class YoutubeDLRedirectHandler(compat_urllib_request.HTTPRedirectHandler):
         # but it is kept for compatibility with other callers.
         newurl = newurl.replace(' ', '%20')
 
-        CONTENT_HEADERS = ("content-length", "content-type")
+        # Technically the Cookie header should be in unredirected_hdrs;
+        # however in practice some may set it in normal headers anyway.
+        # We will remove it here to prevent any leaks.
+        # Also remove unwanted and undocumented Host header for old URL
+        remove_headers = ['Cookie', 'Host']
+
+        # A 303 must either use GET or HEAD for subsequent request
+        # https://datatracker.ietf.org/doc/html/rfc7231#section-6.4.4
+        if code == 303 and req.get_method() != 'HEAD':
+            new_method = 'GET'
+        # 301 and 302 redirects are commonly turned into a GET from a POST
+        # for subsequent requests by browsers, so we'll do the same.
+        # https://datatracker.ietf.org/doc/html/rfc7231#section-6.4.2
+        # https://datatracker.ietf.org/doc/html/rfc7231#section-6.4.3
+        elif code in (301, 302) and req.get_method() == 'POST':
+            new_method = 'GET'
+
+        # only remove payload if method changed (e.g. POST to GET)
+        if new_method != req.get_method():
+            new_data = None
+            remove_headers.extend(['Content-Length', 'Content-Type'])
+
         # NB: don't use dict comprehension for python 2.6 compatibility
-        newheaders = dict((k, v) for k, v in req.headers.items()
-                          if k.lower() not in CONTENT_HEADERS)
+        new_headers = dict((k, v) for k, v in req.header_items()
+                           if k.title() not in remove_headers)
+
         return compat_urllib_request.Request(
-            newurl, headers=newheaders, origin_req_host=req.origin_req_host,
-            unverifiable=True)
+            newurl, headers=new_headers, origin_req_host=req.origin_req_host,
+            unverifiable=True, method=new_method, data=new_data)
 
 
 def extract_timezone(date_str):
@@ -3881,7 +3914,7 @@ def detect_exe_version(output, version_re=None, unrecognized='present'):
         return unrecognized
 
 
-class LazyList(compat_collections_abc.Sequence):
+class LazyList(compat_collections_abc.Iterable):
     """Lazy immutable list from an iterable
     Note that slices of a LazyList are lists and not LazyList"""
 
@@ -4223,20 +4256,22 @@ def multipart_encode(data, boundary=None):
     return out, content_type
 
 
-def variadic(x, allowed_types=(compat_str, bytes, dict)):
-    if not isinstance(allowed_types, tuple) and isinstance(allowed_types, compat_collections_abc.Iterable):
+def is_iterable_like(x, allowed_types=compat_collections_abc.Iterable, blocked_types=NO_DEFAULT):
+    if blocked_types is NO_DEFAULT:
+        blocked_types = (compat_str, bytes, compat_collections_abc.Mapping)
+    return isinstance(x, allowed_types) and not isinstance(x, blocked_types)
+
+
+def variadic(x, allowed_types=NO_DEFAULT):
+    if isinstance(allowed_types, compat_collections_abc.Iterable):
         allowed_types = tuple(allowed_types)
-    return x if isinstance(x, compat_collections_abc.Iterable) and not isinstance(x, allowed_types) else (x,)
+    return x if is_iterable_like(x, blocked_types=allowed_types) else (x,)
 
 
 def dict_get(d, key_or_keys, default=None, skip_false_values=True):
-    if isinstance(key_or_keys, (list, tuple)):
-        for key in key_or_keys:
-            if key not in d or d[key] is None or skip_false_values and not d[key]:
-                continue
-            return d[key]
-        return default
-    return d.get(key_or_keys, default)
+    exp = (lambda x: x or None) if skip_false_values else IDENTITY
+    return traverse_obj(d, *variadic(key_or_keys), expected_type=exp,
+                        default=default, get_all=False)
 
 
 def try_call(*funcs, **kwargs):
@@ -4269,16 +4304,38 @@ def try_get(src, getter, expected_type=None):
                 return v
 
 
-def merge_dicts(*dicts):
+def merge_dicts(*dicts, **kwargs):
+    """
+        Merge the `dict`s in `dicts` using the first valid value for each key.
+        Normally valid: not None and not an empty string
+
+        Keyword-only args:
+        unblank:    allow empty string if False (default True)
+        rev:        merge dicts in reverse order (default False)
+
+        merge_dicts(dct1, dct2, ..., unblank=False, rev=True)
+        matches {**dct1, **dct2, ...}
+
+        However, merge_dicts(dct1, dct2, ..., rev=True) may often be better.
+    """
+
+    unblank = kwargs.get('unblank', True)
+    rev = kwargs.get('rev', False)
+
+    if unblank:
+        def can_merge_str(k, v, to_dict):
+            return (isinstance(v, compat_str) and v
+                    and isinstance(to_dict[k], compat_str)
+                    and not to_dict[k])
+    else:
+        can_merge_str = lambda k, v, to_dict: False
+
     merged = {}
-    for a_dict in dicts:
+    for a_dict in reversed(dicts) if rev else dicts:
         for k, v in a_dict.items():
             if v is None:
                 continue
-            if (k not in merged
-                    or (isinstance(v, compat_str) and v
-                        and isinstance(merged[k], compat_str)
-                        and not merged[k])):
+            if (k not in merged) or can_merge_str(k, v, merged):
                 merged[k] = v
     return merged
 
@@ -4332,46 +4389,108 @@ def strip_jsonp(code):
         r'\g<callback_data>', code)
 
 
-def js_to_json(code):
-    COMMENT_RE = r'/\*(?:(?!\*/).)*?\*/|//[^\n]*'
+def js_to_json(code, *args, **kwargs):
+
+    # vars is a dict of (var, val) pairs to substitute
+    vars = args[0] if len(args) > 0 else kwargs.get('vars', {})
+    strict = kwargs.get('strict', False)
+
+    STRING_QUOTES = '\'"`'
+    STRING_RE = '|'.join(r'{0}(?:\\.|[^\\{0}])*{0}'.format(q) for q in STRING_QUOTES)
+    COMMENT_RE = r'/\*(?:(?!\*/).)*?\*/|//[^\n]*\n'
     SKIP_RE = r'\s*(?:{comment})?\s*'.format(comment=COMMENT_RE)
     INTEGER_TABLE = (
         (r'(?s)^(0[xX][0-9a-fA-F]+){skip}:?$'.format(skip=SKIP_RE), 16),
         (r'(?s)^(0+[0-7]+){skip}:?$'.format(skip=SKIP_RE), 8),
+        (r'(?s)^(\d+){skip}:?$'.format(skip=SKIP_RE), 10),
     )
+    # compat candidate
+    JSONDecodeError = json.JSONDecodeError if 'JSONDecodeError' in dir(json) else ValueError
+
+    def process_escape(match):
+        JSON_PASSTHROUGH_ESCAPES = r'"\bfnrtu'
+        escape = match.group(1) or match.group(2)
+
+        return ('\\' + escape if escape in JSON_PASSTHROUGH_ESCAPES
+                else '\\u00' if escape == 'x'
+                else '' if escape == '\n'
+                else escape)
+
+    def template_substitute(match):
+        evaluated = js_to_json(match.group(1), vars, strict=strict)
+        if evaluated[0] == '"':
+            return json.loads(evaluated)
+        return evaluated
 
     def fix_kv(m):
         v = m.group(0)
         if v in ('true', 'false', 'null'):
             return v
-        elif v.startswith('/*') or v.startswith('//') or v.startswith('!') or v == ',':
-            return ""
+        elif v in ('undefined', 'void 0'):
+            return 'null'
+        elif v.startswith('/*') or v.startswith('//') or v == ',':
+            return ''
 
-        if v[0] in ("'", '"'):
-            v = re.sub(r'(?s)\\.|"', lambda m: {
-                '"': '\\"',
-                "\\'": "'",
-                '\\\n': '',
-                '\\x': '\\u00',
-            }.get(m.group(0), m.group(0)), v[1:-1])
-        else:
-            for regex, base in INTEGER_TABLE:
-                im = re.match(regex, v)
-                if im:
-                    i = int(im.group(1), base)
-                    return '"%d":' % i if v.endswith(':') else '%d' % i
+        if v[0] in STRING_QUOTES:
+            v = re.sub(r'(?s)\${([^}]+)}', template_substitute, v[1:-1]) if v[0] == '`' else v[1:-1]
+            escaped = re.sub(r'(?s)(")|\\(.)', process_escape, v)
+            return '"{0}"'.format(escaped)
 
-        return '"%s"' % v
+        inv = IDENTITY
+        im = re.split(r'^!+', v)
+        if len(im) > 1 and not im[-1].endswith(':'):
+            if (len(v) - len(im[1])) % 2 == 1:
+                inv = lambda x: 'true' if x == 0 else 'false'
+            else:
+                inv = lambda x: 'false' if x == 0 else 'true'
+        if not any(x for x in im):
+            return
+        v = im[-1]
+
+        for regex, base in INTEGER_TABLE:
+            im = re.match(regex, v)
+            if im:
+                i = int(im.group(1), base)
+                return ('"%s":' if v.endswith(':') else '%s') % inv(i)
+
+        if v in vars:
+            try:
+                if not strict:
+                    json.loads(vars[v])
+            except JSONDecodeError:
+                return inv(json.dumps(vars[v]))
+            else:
+                return inv(vars[v])
+
+        if not strict:
+            v = try_call(inv, args=(v,), default=v)
+            if v in ('true', 'false'):
+                return v
+            return '"{0}"'.format(v)
+
+        raise ValueError('Unknown value: ' + v)
+
+    def create_map(mobj):
+        return json.dumps(dict(json.loads(js_to_json(mobj.group(1) or '[]', vars=vars))))
+
+    code = re.sub(r'new Map\((\[.*?\])?\)', create_map, code)
+    if not strict:
+        code = re.sub(r'new Date\((".+")\)', r'\g<1>', code)
+        code = re.sub(r'new \w+\((.*?)\)', lambda m: json.dumps(m.group(0)), code)
+        code = re.sub(r'parseInt\([^\d]+(\d+)[^\d]+\)', r'\1', code)
+        code = re.sub(r'\(function\([^)]*\)\s*\{[^}]*\}\s*\)\s*\(\s*(["\'][^)]*["\'])\s*\)', r'\1', code)
 
     return re.sub(r'''(?sx)
-        "(?:[^"\\]*(?:\\\\|\\['"nurtbfx/\n]))*[^"\\]*"|
-        '(?:[^'\\]*(?:\\\\|\\['"nurtbfx/\n]))*[^'\\]*'|
-        {comment}|,(?={skip}[\]}}])|
-        (?:(?<![0-9])[eE]|[a-df-zA-DF-Z_])[.a-zA-Z_0-9]*|
-        \b(?:0[xX][0-9a-fA-F]+|0+[0-7]+)(?:{skip}:)?|
-        [0-9]+(?={skip}:)|
+        {str_}|
+        {comment}|
+        ,(?={skip}[\]}}])|
+        void\s0|
+        !*(?:(?<!\d)[eE]|[a-df-zA-DF-Z_$])[.a-zA-Z_$0-9]*|
+        (?:\b|!+)0(?:[xX][\da-fA-F]+|[0-7]+)(?:{skip}:)?|
+        !+\d+(?:\.\d*)?(?:{skip}:)?|
+        [0-9]+(?:{skip}:)|
         !+
-        '''.format(comment=COMMENT_RE, skip=SKIP_RE), fix_kv, code)
+        '''.format(comment=COMMENT_RE, skip=SKIP_RE, str_=STRING_RE), fix_kv, code)
 
 
 def qualities(quality_ids):
@@ -5991,9 +6110,40 @@ def clean_podcast_url(url):
         )/''', '', url)
 
 
+if __debug__:
+    # Raise TypeError if args can't be bound
+    # needs compat owing to unstable inspect API, thanks PSF :-(
+    try:
+        inspect.signature
+
+        def _try_bind_args(fn, *args, **kwargs):
+            inspect.signature(fn).bind(*args, **kwargs)
+    except AttributeError:
+        # Py < 3.3
+        def _try_bind_args(fn, *args, **kwargs):
+            fn_args = inspect.getargspec(fn)
+            # Py2: ArgInfo(args, varargs, keywords, defaults)
+            # Py3: ArgSpec(args, varargs, keywords, defaults)
+            if not fn_args.keywords:
+                for k in kwargs:
+                    if k not in (fn_args.args or []):
+                        raise TypeError("got an unexpected keyword argument: '{0}'".format(k))
+            if not fn_args.varargs:
+                args_to_bind = len(args)
+                bindable = len(fn_args.args or [])
+                if args_to_bind > bindable:
+                    raise TypeError('too many positional arguments')
+                bindable -= len(fn_args.defaults or [])
+                if args_to_bind < bindable:
+                    if kwargs:
+                        bindable -= len(set(fn_args.args or []) & set(kwargs))
+                    if bindable > args_to_bind:
+                        raise TypeError("missing a required argument: '{0}'".format(fn_args.args[args_to_bind]))
+
+
 def traverse_obj(obj, *paths, **kwargs):
     """
-    Safely traverse nested `dict`s and `Sequence`s
+    Safely traverse nested `dict`s and `Iterable`s
 
     >>> obj = [{}, {"key": "value"}]
     >>> traverse_obj(obj, (1, "key"))
@@ -6001,14 +6151,17 @@ def traverse_obj(obj, *paths, **kwargs):
 
     Each of the provided `paths` is tested and the first producing a valid result will be returned.
     The next path will also be tested if the path branched but no results could be found.
-    Supported values for traversal are `Mapping`, `Sequence` and `re.Match`.
-    A value of None is treated as the absence of a value.
+    Supported values for traversal are `Mapping`, `Iterable` and `re.Match`.
+    Unhelpful values (`{}`, `None`) are treated as the absence of a value and discarded.
 
     The paths will be wrapped in `variadic`, so that `'key'` is conveniently the same as `('key', )`.
 
     The keys in the path can be one of:
         - `None`:           Return the current object.
-        - `str`/`int`:      Return `obj[key]`. For `re.Match, return `obj.group(key)`.
+        - `set`:            Requires the only item in the set to be a type or function,
+                            like `{type}`/`{func}`. If a `type`, returns only values
+                            of this type. If a function, returns `func(obj)`.
+        - `str`/`int`:      Return `obj[key]`. For `re.Match`, return `obj.group(key)`.
         - `slice`:          Branch out and return all values in `obj[key]`.
         - `Ellipsis`:       Branch out and return a list of all values.
         - `tuple`/`list`:   Branch out and return a list of all matching values.
@@ -6016,6 +6169,9 @@ def traverse_obj(obj, *paths, **kwargs):
         - `function`:       Branch out and return values filtered by the function.
                             Read as: `[value for key, value in obj if function(key, value)]`.
                             For `Sequence`s, `key` is the index of the value.
+                            For `Iterable`s, `key` is the enumeration count of the value.
+                            For `re.Match`es, `key` is the group number (0 = full match)
+                            as well as additionally any group names, if given.
         - `dict`            Transform the current object and return a matching dict.
                             Read as: `{key: traverse_obj(obj, path) for key, path in dct.items()}`.
 
@@ -6024,8 +6180,12 @@ def traverse_obj(obj, *paths, **kwargs):
     @params paths           Paths which to traverse by.
     Keyword arguments:
     @param default          Value to return if the paths do not match.
+                            If the last key in the path is a `dict`, it will apply to each value inside
+                            the dict instead, depth first. Try to avoid if using nested `dict` keys.
     @param expected_type    If a `type`, only accept final values of this type.
                             If any other callable, try to call the function on each result.
+                            If the last key in the path is a `dict`, it will apply to each value inside
+                            the dict instead, recursively. This does respect branching paths.
     @param get_all          If `False`, return the first matching result, otherwise all matching ones.
     @param casesense        If `False`, consider string dictionary keys as case insensitive.
 
@@ -6036,12 +6196,15 @@ def traverse_obj(obj, *paths, **kwargs):
     @param _traverse_string  Whether to traverse into objects as strings.
                             If `True`, any non-compatible object will first be
                             converted into a string and then traversed into.
+                            The return value of that path will be a string instead,
+                            not respecting any further branching.
 
 
     @returns                The result of the object traversal.
                             If successful, `get_all=True`, and the path branches at least once,
                             then a list of results is returned instead.
                             A list is always returned if the last path branches and no `default` is given.
+                            If a path ends on a `dict` that result will always be a `dict`.
     """
 
     # parameter defaults
@@ -6055,7 +6218,6 @@ def traverse_obj(obj, *paths, **kwargs):
     # instant compat
     str = compat_str
 
-    is_sequence = lambda x: isinstance(x, compat_collections_abc.Sequence) and not isinstance(x, (str, bytes))
     casefold = lambda k: compat_casefold(k) if isinstance(k, str) else k
 
     if isinstance(expected_type, type):
@@ -6063,126 +6225,179 @@ def traverse_obj(obj, *paths, **kwargs):
     else:
         type_test = lambda val: try_call(expected_type or IDENTITY, args=(val,))
 
+    def lookup_or_none(v, k, getter=None):
+        try:
+            return getter(v, k) if getter else v[k]
+        except IndexError:
+            return None
+
     def from_iterable(iterables):
         # chain.from_iterable(['ABC', 'DEF']) --> A B C D E F
         for it in iterables:
             for item in it:
                 yield item
 
-    def apply_key(key, obj):
-        if obj is None:
-            return
+    def apply_key(key, obj, is_last):
+        branching = False
+
+        if obj is None and _traverse_string:
+            if key is Ellipsis or callable(key) or isinstance(key, slice):
+                branching = True
+                result = ()
+            else:
+                result = None
 
         elif key is None:
-            yield obj
+            result = obj
+
+        elif isinstance(key, set):
+            assert len(key) == 1, 'Set should only be used to wrap a single item'
+            item = next(iter(key))
+            if isinstance(item, type):
+                result = obj if isinstance(obj, item) else None
+            else:
+                result = try_call(item, args=(obj,))
 
         elif isinstance(key, (list, tuple)):
-            for branch in key:
-                _, result = apply_path(obj, branch)
-                for item in result:
-                    yield item
+            branching = True
+            result = from_iterable(
+                apply_path(obj, branch, is_last)[0] for branch in key)
 
         elif key is Ellipsis:
-            result = []
+            branching = True
             if isinstance(obj, compat_collections_abc.Mapping):
                 result = obj.values()
-            elif is_sequence(obj):
+            elif is_iterable_like(obj):
                 result = obj
             elif isinstance(obj, compat_re_Match):
                 result = obj.groups()
             elif _traverse_string:
+                branching = False
                 result = str(obj)
-            for item in result:
-                yield item
+            else:
+                result = ()
 
         elif callable(key):
-            if is_sequence(obj):
-                iter_obj = enumerate(obj)
-            elif isinstance(obj, compat_collections_abc.Mapping):
+            branching = True
+            if isinstance(obj, compat_collections_abc.Mapping):
                 iter_obj = obj.items()
+            elif is_iterable_like(obj):
+                iter_obj = enumerate(obj)
             elif isinstance(obj, compat_re_Match):
-                iter_obj = enumerate(itertools.chain([obj.group()], obj.groups()))
+                iter_obj = itertools.chain(
+                    enumerate(itertools.chain((obj.group(),), obj.groups())),
+                    obj.groupdict().items())
             elif _traverse_string:
+                branching = False
                 iter_obj = enumerate(str(obj))
             else:
-                return
-            for item in (v for k, v in iter_obj if try_call(key, args=(k, v))):
-                yield item
+                iter_obj = ()
+
+            result = (v for k, v in iter_obj if try_call(key, args=(k, v)))
+            if not branching:  # string traversal
+                result = ''.join(result)
 
         elif isinstance(key, dict):
-            iter_obj = ((k, _traverse_obj(obj, v)) for k, v in key.items())
-            yield dict((k, v if v is not None else default) for k, v in iter_obj
-                       if v is not None or default is not NO_DEFAULT)
+            iter_obj = ((k, _traverse_obj(obj, v, False, is_last)) for k, v in key.items())
+            result = dict((k, v if v is not None else default) for k, v in iter_obj
+                          if v is not None or default is not NO_DEFAULT) or None
 
         elif isinstance(obj, compat_collections_abc.Mapping):
-            yield (obj.get(key) if casesense or (key in obj)
-                   else next((v for k, v in obj.items() if casefold(k) == key), None))
+            result = (try_call(obj.get, args=(key,))
+                      if casesense or try_call(obj.__contains__, args=(key,))
+                      else next((v for k, v in obj.items() if casefold(k) == key), None))
 
         elif isinstance(obj, compat_re_Match):
+            result = None
             if isinstance(key, int) or casesense:
-                try:
-                    yield obj.group(key)
-                    return
-                except IndexError:
-                    pass
-            if not isinstance(key, str):
-                return
+                # Py 2.6 doesn't have methods in the Match class/type
+                result = lookup_or_none(obj, key, getter=lambda _, k: obj.group(k))
 
-            yield next((v for k, v in obj.groupdict().items() if casefold(k) == key), None)
+            elif isinstance(key, str):
+                result = next((v for k, v in obj.groupdict().items()
+                              if casefold(k) == key), None)
 
         else:
-            if _is_user_input:
-                key = (int_or_none(key) if ':' not in key
-                       else slice(*map(int_or_none, key.split(':'))))
+            result = None
+            if isinstance(key, (int, slice)):
+                if is_iterable_like(obj, compat_collections_abc.Sequence):
+                    branching = isinstance(key, slice)
+                    result = lookup_or_none(obj, key)
+                elif _traverse_string:
+                    result = lookup_or_none(str(obj), key)
 
-            if not isinstance(key, (int, slice)):
-                return
+        return branching, result if branching else (result,)
 
-            if not is_sequence(obj):
-                if not _traverse_string:
-                    return
-                obj = str(obj)
+    def lazy_last(iterable):
+        iterator = iter(iterable)
+        prev = next(iterator, NO_DEFAULT)
+        if prev is NO_DEFAULT:
+            return
 
-            try:
-                yield obj[key]
-            except IndexError:
-                pass
+        for item in iterator:
+            yield False, prev
+            prev = item
 
-    def apply_path(start_obj, path):
+        yield True, prev
+
+    def apply_path(start_obj, path, test_type):
         objs = (start_obj,)
         has_branched = False
 
-        for key in variadic(path):
-            if _is_user_input and key == ':':
-                key = Ellipsis
+        key = None
+        for last, key in lazy_last(variadic(path, (str, bytes, dict, set))):
+            if _is_user_input and isinstance(key, str):
+                if key == ':':
+                    key = Ellipsis
+                elif ':' in key:
+                    key = slice(*map(int_or_none, key.split(':')))
+                elif int_or_none(key) is not None:
+                    key = int(key)
 
             if not casesense and isinstance(key, str):
                 key = compat_casefold(key)
 
-            if key is Ellipsis or isinstance(key, (list, tuple)) or callable(key):
-                has_branched = True
+            if __debug__ and callable(key):
+                # Verify function signature
+                _try_bind_args(key, None, None)
 
-            key_func = functools.partial(apply_key, key)
-            objs = from_iterable(map(key_func, objs))
+            new_objs = []
+            for obj in objs:
+                branching, results = apply_key(key, obj, last)
+                has_branched |= branching
+                new_objs.append(results)
 
-        return has_branched, objs
+            objs = from_iterable(new_objs)
 
-    def _traverse_obj(obj, path, use_list=True):
-        has_branched, results = apply_path(obj, path)
-        results = LazyList(x for x in map(type_test, results) if x is not None)
+        if test_type and not isinstance(key, (dict, list, tuple)):
+            objs = map(type_test, objs)
+
+        return objs, has_branched, isinstance(key, dict)
+
+    def _traverse_obj(obj, path, allow_empty, test_type):
+        results, has_branched, is_dict = apply_path(obj, path, test_type)
+        results = LazyList(x for x in results if x not in (None, {}))
 
         if get_all and has_branched:
-            return results.exhaust() if results or use_list else None
+            if results:
+                return results.exhaust()
+            if allow_empty:
+                return [] if default is NO_DEFAULT else default
+            return None
 
-        return results[0] if results else None
+        return results[0] if results else {} if allow_empty and is_dict else None
 
     for index, path in enumerate(paths, 1):
-        use_list = default is NO_DEFAULT and index == len(paths)
-        result = _traverse_obj(obj, path, use_list)
+        result = _traverse_obj(obj, path, index == len(paths), True)
         if result is not None:
             return result
 
     return None if default is NO_DEFAULT else default
+
+
+def T(x):
+    """ For use in yt-dl instead of {type} or set((type,)) """
+    return set((x,))
 
 
 def get_first(obj, keys, **kwargs):
